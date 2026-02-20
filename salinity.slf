@@ -1,34 +1,91 @@
-function slf=slf_open(fname)
-fid=fopen(fname,'r','ieee-le');
-if fid<0,error("No puedo abrir: "+string(fname));end
+function make_salin_movie_2d
+clear;clc
 
-ok=true;
+fname="r3d_estuary";
+if ~endsWith(fname,".slf"),fname=fname+".slf";end
+
+varKey="SALIN";              % busca variable que contenga esto (SALINITY, SALIN, etc.)
+layerMode="surface";         % "surface" (si es 3D) | "bottom" | numero (ej 3)
+outmp4="salinidad_2D.mp4";
+fps=6;                       % 4-8 recomendado para mareas
+cax=[0 35];                  % [] para autoscale, o fija [min max] para comparar
+
+slf=slf_open(fname);
+disp("Archivo: "+slf.title)
+disp("NPLAN="+slf.nplan+"  NPOIN="+slf.npoin+"  NPOIN2="+slf.npoin2)
+
+vix=slf_find_var(slf,varKey);
+disp("Usando variable: "+slf.varname(vix))
+
+[idx,x,y]=slf_select_2d_view(slf,layerMode);
+
+tri=slf.ikle;
+v=VideoWriter(outmp4,"MPEG-4");
+v.FrameRate=fps;
+open(v)
+
+fig=figure("Color","w");
+ax=axes(fig);
+
+slf_rewind_to_data(slf);
+
+tcount=0;
+while true
+    try
+        t=slf_read_time(slf.fid);
+    catch
+        break
+    end
+    tcount=tcount+1;
+
+    field=[];
+    for iv=1:slf.nbv
+        a=slf_read_var(slf.fid,slf.npoin,slf.precision);
+        if iv==vix,field=a;end
+    end
+    z=field(idx);
+
+    trisurf(ax,tri,x,y,z,"EdgeColor","none");
+    view(ax,2);axis(ax,"equal");axis(ax,"tight");
+    colorbar(ax);
+    if ~isempty(cax),caxis(ax,cax);end
+    title(ax,slf.varname(vix)+"   t="+num2str(t/3600,"%.2f")+" h");
+
+    drawnow
+    writeVideo(v,getframe(fig));
+end
+
+close(v)
+close(fig)
+slf_close(slf)
+
+disp("Frames: "+tcount)
+disp("Listo: "+outmp4)
+end
+
+
+
+function slf=slf_open(fname)
+fid=fopen(fname,"r","ieee-le");
+if fid<0,error("No puedo abrir: "+string(fname));end
 try
     [title,nbv]=slf_read_title_nbv(fid);
 catch
-    ok=false;
-end
-if ~ok
     fclose(fid);
-    fid=fopen(fname,'r','ieee-be');
+    fid=fopen(fname,"r","ieee-be");
     if fid<0,error("No puedo abrir: "+string(fname));end
     [title,nbv]=slf_read_title_nbv(fid);
 end
 
 [varname,varunit]=slf_read_varnames(fid,nbv);
-iparam=slf_read_iparam(fid);
-
-hasdate=false;datevec=[];
-if numel(iparam)>=10 && iparam(10)==1
-    datevec=slf_read_i32(fid,6);
-    hasdate=true;
-end
+iparam=slf_read_i32(fid,10);
 
 m=slf_read_i32(fid,4);
 nelem=m(1);npoin=m(2);ndp=m(3);
 
 ikle=slf_read_i32(fid,nelem*ndp);
 ikle=reshape(ikle,[ndp,nelem])';
+
 ipobo=slf_read_i32(fid,npoin);
 
 [x,precx]=slf_read_real_by_len(fid,npoin);
@@ -43,14 +100,11 @@ if numel(iparam)>=7 && iparam(7)>1
 end
 
 slf.fid=fid;
-slf.endian=fopen(fid);
 slf.title=string(strtrim(title));
 slf.nbv=nbv;
 slf.varname=string(varname);
 slf.varunit=string(varunit);
 slf.iparam=iparam(:)';
-slf.hasdate=hasdate;
-slf.datevec=datevec;
 slf.nelem=nelem;
 slf.npoin=npoin;
 slf.ndp=ndp;
@@ -61,18 +115,103 @@ slf.y=y;
 slf.precision=prec;
 slf.nplan=nplan;
 slf.npoin2=npoin2;
-
 slf.data_pos=ftell(fid);
-slf.time_pos=[];
-slf.nsteps=[];
 end
+
+
+
+function slf_close(slf)
+if isfield(slf,"fid") && slf.fid>0
+    fclose(slf.fid);
+end
+end
+
+
+
+function vix=slf_find_var(slf,varKey)
+vix=find(contains(upper(slf.varname),upper(string(varKey))),1);
+if isempty(vix)
+    disp("Variables disponibles:")
+    for i=1:slf.nbv
+        disp(sprintf("%3d) %s",i,strtrim(slf.varname(i))))
+    end
+    error("No encontré variable que contenga: "+string(varKey))
+end
+end
+
+
+
+function [idx,x,y]=slf_select_2d_view(slf,layerMode)
+if slf.nplan<=1
+    idx=1:slf.npoin;
+    x=slf.x;y=slf.y;
+    return
+end
+
+if isstring(layerMode)||ischar(layerMode)
+    s=string(layerMode);
+    if strcmpi(s,"surface")
+        lay=slf.nplan;
+    elseif strcmpi(s,"bottom")
+        lay=1;
+    else
+        lay=str2double(s);
+    end
+else
+    lay=layerMode;
+end
+if isnan(lay)||lay<1||lay>slf.nplan,error("layerMode inválido");end
+
+idx=(lay-1)*slf.npoin2+(1:slf.npoin2);
+x=slf.x(idx);y=slf.y(idx);
+end
+
+
+
+function slf_rewind_to_data(slf)
+fseek(slf.fid,slf.data_pos,"bof");
+end
+
+
+
+function t=slf_read_time(fid)
+L=fread(fid,1,"int32");
+if isempty(L),error("EOF");end
+if L==4
+    t=fread(fid,1,"single");
+elseif L==8
+    t=fread(fid,1,"double");
+else
+    error("Record TIME inesperado: "+num2str(L));
+end
+fread(fid,1,"int32");
+end
+
+
+
+function a=slf_read_var(fid,np,prec)
+L=fread(fid,1,"int32");
+if isempty(L),error("EOF");end
+if prec==4
+    if L~=4*np,error("Record VAR inesperado (len="+num2str(L)+")");end
+    a=fread(fid,np,"single");
+else
+    if L~=8*np,error("Record VAR inesperado (len="+num2str(L)+")");end
+    a=fread(fid,np,"double");
+end
+fread(fid,1,"int32");
+end
+
+
 
 function [title,nbv]=slf_read_title_nbv(fid)
 raw=slf_read_bytes(fid,80);
 title=char(raw');
-nbv=slf_read_i32(fid,2);
-nbv=nbv(1)+nbv(2);
+nbv2=slf_read_i32(fid,2);
+nbv=nbv2(1)+nbv2(2);
 end
+
+
 
 function [names,units]=slf_read_varnames(fid,nbv)
 names=cell(nbv,1);units=cell(nbv,1);
@@ -84,35 +223,35 @@ for i=1:nbv
 end
 end
 
-function iparam=slf_read_iparam(fid)
-iparam=slf_read_i32(fid,10);
-end
+
 
 function b=slf_read_bytes(fid,n)
-L=fread(fid,1,'int32');
+L=fread(fid,1,"int32");
 if isempty(L),error("EOF");end
-b=fread(fid,n,'uint8');
-fread(fid,1,'int32');
+b=fread(fid,n,"uint8");
+fread(fid,1,"int32");
 end
+
+
 
 function v=slf_read_i32(fid,n)
-L=fread(fid,1,'int32');
+L=fread(fid,1,"int32");
 if isempty(L),error("EOF");end
-v=fread(fid,n,'int32');
-fread(fid,1,'int32');
+v=fread(fid,n,"int32");
+fread(fid,1,"int32");
 end
 
+
+
 function [v,prec]=slf_read_real_by_len(fid,n)
-L=fread(fid,1,'int32');
+L=fread(fid,1,"int32");
 if isempty(L),error("EOF");end
 if L==4*n
-    v=fread(fid,n,'single');
-    prec=4;
+    v=fread(fid,n,"single");prec=4;
 elseif L==8*n
-    v=fread(fid,n,'double');
-    prec=8;
+    v=fread(fid,n,"double");prec=8;
 else
-    error("Longitud de record REAL inesperada: "+num2str(L));
+    error("Longitud REAL inesperada: "+num2str(L));
 end
-fread(fid,1,'int32');
+fread(fid,1,"int32");
 end
