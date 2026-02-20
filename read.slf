@@ -1,0 +1,118 @@
+function slf=slf_open(fname)
+fid=fopen(fname,'r','ieee-le');
+if fid<0,error("No puedo abrir: "+string(fname));end
+
+ok=true;
+try
+    [title,nbv]=slf_read_title_nbv(fid);
+catch
+    ok=false;
+end
+if ~ok
+    fclose(fid);
+    fid=fopen(fname,'r','ieee-be');
+    if fid<0,error("No puedo abrir: "+string(fname));end
+    [title,nbv]=slf_read_title_nbv(fid);
+end
+
+[varname,varunit]=slf_read_varnames(fid,nbv);
+iparam=slf_read_iparam(fid);
+
+hasdate=false;datevec=[];
+if numel(iparam)>=10 && iparam(10)==1
+    datevec=slf_read_i32(fid,6);
+    hasdate=true;
+end
+
+m=slf_read_i32(fid,4);
+nelem=m(1);npoin=m(2);ndp=m(3);
+
+ikle=slf_read_i32(fid,nelem*ndp);
+ikle=reshape(ikle,[ndp,nelem])';
+ipobo=slf_read_i32(fid,npoin);
+
+[x,precx]=slf_read_real_by_len(fid,npoin);
+[y,precy]=slf_read_real_by_len(fid,npoin);
+prec=precx;
+if precy~=precx,prec=max(precx,precy);end
+
+nplan=1;npoin2=npoin;
+if numel(iparam)>=7 && iparam(7)>1
+    nplan=iparam(7);
+    npoin2=npoin/nplan;
+end
+
+slf.fid=fid;
+slf.endian=fopen(fid);
+slf.title=string(strtrim(title));
+slf.nbv=nbv;
+slf.varname=string(varname);
+slf.varunit=string(varunit);
+slf.iparam=iparam(:)';
+slf.hasdate=hasdate;
+slf.datevec=datevec;
+slf.nelem=nelem;
+slf.npoin=npoin;
+slf.ndp=ndp;
+slf.ikle=ikle;
+slf.ipobo=ipobo;
+slf.x=x;
+slf.y=y;
+slf.precision=prec;
+slf.nplan=nplan;
+slf.npoin2=npoin2;
+
+slf.data_pos=ftell(fid);
+slf.time_pos=[];
+slf.nsteps=[];
+end
+
+function [title,nbv]=slf_read_title_nbv(fid)
+raw=slf_read_bytes(fid,80);
+title=char(raw');
+nbv=slf_read_i32(fid,2);
+nbv=nbv(1)+nbv(2);
+end
+
+function [names,units]=slf_read_varnames(fid,nbv)
+names=cell(nbv,1);units=cell(nbv,1);
+for i=1:nbv
+    n=slf_read_bytes(fid,16);
+    u=slf_read_bytes(fid,16);
+    names{i}=char(n');
+    units{i}=char(u');
+end
+end
+
+function iparam=slf_read_iparam(fid)
+iparam=slf_read_i32(fid,10);
+end
+
+function b=slf_read_bytes(fid,n)
+L=fread(fid,1,'int32');
+if isempty(L),error("EOF");end
+b=fread(fid,n,'uint8');
+fread(fid,1,'int32');
+end
+
+function v=slf_read_i32(fid,n)
+L=fread(fid,1,'int32');
+if isempty(L),error("EOF");end
+v=fread(fid,n,'int32');
+fread(fid,1,'int32');
+end
+
+function [v,prec]=slf_read_real_by_len(fid,n)
+L=fread(fid,1,'int32');
+if isempty(L),error("EOF");end
+if L==4*n
+    v=fread(fid,n,'single');
+    prec=4;
+elseif L==8*n
+    v=fread(fid,n,'double');
+    prec=8;
+else
+    error("Longitud de record REAL inesperada: "+num2str(L));
+end
+fread(fid,1,'int32');
+end
